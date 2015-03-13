@@ -1,54 +1,108 @@
 var path = require('path')
 	, fs = require('fs')
-	, uglify = require('uglify-js')
-	, csso = require('csso')
+	, _ = require('lodash')
+	, Q = require('q')
+	, parse5 = require('parse5')
+	, parse5Utils = require('parse5-utils')
+	, handlers = require('./lib/handlers.js');
 
-	, RE_SRC = /src=["|'](.+?)["|']/
-	, RE_HREF = /href=["|'](.+?)["|']/;
+function checkOptions(options) {
 
-/**
- * Synchronously parse 'html' for <script> and <link> tags containing an 'inline' attribute,
- * and replace with compressed file contents
- * @param {String} htmlpath
- * @param {String} [html]
- * @param {Object} options  [compress:true, swallowErrors:true, rootpath:'']
- * @returns {String}
- */
-module.exports = function (htmlpath, html, options) {
-	var arity = arguments.length;
-	if (arity == 1) {
-		html = '';
-		options = {};
-	} else if (arity == 2) {
-		if ('object' == typeof html) {
-			options = html;
-			html = '';
-		} else {
-			options = {};
+	return _.assign({
+		tags: ['script', 'link'],
+		inlineAttribute: 'inline',
+		handlers: {
+			'script': {
+
+			},
+			'link': {
+				
+			}
 		}
-	}
+	}, options)
 
-	options = config(options);
+}
 
-	if (!html) {
-		try {
-			html = fs.readFileSync(htmlpath, 'utf8');
-		} catch (err) {
-			if (!options.swallowErrors) throw err;
+module.exports = function inline(html, options, callback) {
+
+	options = checkOptions(options);
+
+	// Initialize the parser
+	var parser = new parse5.Parser();
+
+	// Parse the HTML
+	var documentFragment = parser.parseFragment(html);
+
+	// Define the node inliner
+	var inlineNode = function inlineNode(node) {
+
+		// Check if we are interested in this tag
+		if (options.tags.indexOf(node.tagName) === -1) {
 			return;
 		}
-	}
 
-	// Parse inline sources
-	var sources = parse(htmlpath, html, options);
+		// Check if the tag has the inline attribute
+		if (!_.find(node.attrs, {name: options.inlineAttribute})) {
+			return;
+		}
 
-	// Inline
-	return inline(sources, html, options);
-};
+		// Remove the inline attribute
+		node.attrs = _.reject(node.attrs, {name: options.inlineAttribute});
+
+		// Find the handler for the tag
+		var handler = handlers[node.tagName];
+
+		// Check if we could
+		if (!handler) {
+			return Q.reject('Could not find a handler for tag "' + node.tagName + '".');
+		}
+
+		// Pass the node to the handler
+		return handler(node, options.handlers[node.tagName], options);
+
+	};
+
+	// The tasks array
+	var tasks = [];
+
+	// Define the walker
+	var walker = function walker (node) {
+
+		// Inline the node
+		var task = inlineNode(node);
+
+		// Add task to the list
+		if (task) {
+			tasks.push(task);
+		}
+
+		// Keep walking
+		if (node.childNodes) {
+			node.childNodes.forEach(walker);
+		}
+
+	};
+
+	// Walk nodes
+	walker(documentFragment);
+
+	// Initialize the serializer
+	var serializer = new parse5.Serializer();
+
+	// Wait for tasks and resolve with serialized fragment
+	return Q.all(tasks)
+		.then(function () {
+
+			return serializer.serialize(documentFragment);
+
+		})
+		.nodeify(callback);
+
+}
 
 // Expose steps
-module.exports.parse = parse;
-module.exports.inline = inline;
+/*module.exports.parse = parse;
+module.exports.inline = inline;*/
 
 /**
  * Configure 'options'
@@ -178,23 +232,6 @@ function inline (sources, html, options) {
 	}
 
 	return html;
-}
-
-/**
- * Wrap 'content' in appropriate tag based on 'type'
- * @param {String} type
- * @param {String} content
- * @returns {String}
- */
-function wrapContent (type, content) {
-	var tag = (type == 'css')
-				? 'style'
-				: 'script';
-
-	return '<' + tag + '>'
-		+ content
-		+ '</' + tag + '>';
-
 }
 
 /**

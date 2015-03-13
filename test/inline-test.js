@@ -105,6 +105,11 @@ describe('inline-source', function () {
 			html = inline(path.resolve('index.html'), test, {inlineJS: false});
 			html.should.eql('<script src="./nested/foo.js"></script>');
 		});
+		it('should inline multiple sources that contain an "inline" attribute on the same line', function () {
+			var test = '<script inline src="foo.js"></script><script inline src="bar.js"></script>';
+			html = inline(process.cwd(), test, {compress: true});
+			html.should.eql('<script>var foo=this;</script><script>var bar=this;</script>');
+		});
 	});
 
 	describe('<link> tag inlining', function () {
